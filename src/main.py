@@ -1,15 +1,10 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
-import traceback
-import uuid
 import logging
-from .utils.logger import logger
-from datetime import datetime
 
 from .crawler import WebCrawler
 from .database import VectorDatabase
@@ -43,56 +38,19 @@ class SearchResponse(BaseModel):
     sources: List[dict]
     from_cache: bool = False  # To indicate if response came from database
 
-@app.middleware("http")
-async def add_request_id(request: Request, call_next):
-    request_id = str(uuid.uuid4())
-    logger.info(f"Incoming request", extra={
-        'request_id': request_id,
-        'method': request.method,
-        'url': str(request.url),
-        'headers': dict(request.headers)
-    })
-    
-    try:
-        response = await call_next(request)
-        return response
-    except Exception as e:
-        logger.error(
-            "Request failed",
-            extra={
-                'request_id': request_id,
-                'error': str(e),
-                'traceback': traceback.format_exc()
-            }
-        )
-        return JSONResponse(
-            status_code=500,
-            content={"detail": str(e), "request_id": request_id}
-        )
-
 @app.post("/search", response_model=SearchResponse)
-async def search_and_answer(request: SearchRequest, req: Request):
-    request_id = req.state.request_id
+async def search_and_answer(request: SearchRequest):
+    """
+    Search, crawl, and answer questions using RAG
+    First checks database, then crawls if needed
+    """
     try:
-        logger.info(
-            f"Processing search request",
-            extra={
-                'request_id': request_id,
-                'query': request.query
-            }
-        )
-        
-        # Check database
+        # First check database
+        logging.info(f"Searching database for: {request.query}")
         existing_docs = vector_db.search(request.query, limit=request.num_results)
         
         if existing_docs and len(existing_docs) > 0:
-            logger.info(
-                "Found documents in cache",
-                extra={
-                    'request_id': request_id,
-                    'doc_count': len(existing_docs)
-                }
-            )
+            logging.info("Found relevant documents in database")
             response = rag_system.generate_response_with_sources(request.query)
             return {
                 "answer": response["answer"],
@@ -100,57 +58,27 @@ async def search_and_answer(request: SearchRequest, req: Request):
                 "from_cache": True
             }
         
-        # Crawl web
-        logger.info(
-            "Crawling web for documents",
-            extra={'request_id': request_id}
-        )
-        documents = crawler.search_and_crawl(
-            request.query,
-            num_results=request.num_results
-        )
+        # If no relevant docs found, crawl the web
+        logging.info("No relevant documents found in database, crawling web...")
+        documents = crawler.search_and_crawl(request.query, num_results=request.num_results)
         
         if not documents:
-            logger.warning(
-                "No documents found",
-                extra={'request_id': request_id}
-            )
-            raise HTTPException(
-                status_code=404,
-                detail="No relevant documents found"
-            )
+            raise HTTPException(status_code=404, detail="No relevant documents found")
         
-        # Store and generate response
+        # Store new documents
         vector_db.add_documents(documents)
-        response = rag_system.generate_response_with_sources(request.query)
         
-        logger.info(
-            "Successfully generated response",
-            extra={
-                'request_id': request_id,
-                'source_count': len(response["sources"])
-            }
-        )
+        # Generate response
+        response = rag_system.generate_response_with_sources(request.query)
         
         return {
             "answer": response["answer"],
             "sources": response["sources"],
             "from_cache": False
         }
-        
     except Exception as e:
-        logger.error(
-            "Error processing request",
-            extra={
-                'request_id': request_id,
-                'error': str(e),
-                'traceback': traceback.format_exc()
-            }
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing request: {str(e)}"
-        )
+        logging.error(f"Error in search_and_answer: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents")
 async def get_stored_documents():
@@ -191,33 +119,3 @@ async def root():
             "/": "GET - This welcome page"
         }
     }
-
-@app.get("/debug/logs")
-async def get_recent_logs():
-    """Endpoint to view recent logs (only in debug mode)"""
-    if os.getenv("DEBUG") == "true":
-        return {"logs": logger.get_recent_logs()}
-    return {"message": "Debug mode not enabled"}
-
-@app.get("/health")
-async def health_check():
-    """Enhanced health check endpoint"""
-    try:
-        # Check database connection
-        db_status = vector_db.check_connection()
-        # Check OpenAI API
-        openai_status = rag_system.check_api()
-        
-        return {
-            "status": "healthy" if db_status and openai_status else "unhealthy",
-            "database": "connected" if db_status else "disconnected",
-            "openai_api": "connected" if openai_status else "disconnected",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }
