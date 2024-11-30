@@ -2,7 +2,7 @@ import requests
 import json
 
 def test_search_api():
-    url = "http://localhost:8000/search"
+    url = "https://ai-project-dusky.vercel.app/search"
     
     # Test data
     payload = {
