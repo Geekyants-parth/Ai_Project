@@ -7,5 +7,5 @@ beautifulsoup4==4.12.2
 requests==2.31.0
 pydantic==1.10.13
 googlesearch-python==1.2.3
-tiktoken==0.5.1
+encoding
 mangum>=0.17.0
