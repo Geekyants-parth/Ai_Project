@@ -7,7 +7,9 @@ import os
 from dotenv import load_dotenv
 import traceback
 import uuid
+import logging
 from .utils.logger import logger
+from datetime import datetime
 
 from .crawler import WebCrawler
 from .database import VectorDatabase
