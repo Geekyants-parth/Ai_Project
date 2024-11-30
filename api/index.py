@@ -1,4 +1,5 @@
+from mangum import Adapter
 from src.main import app
 
-# Export the FastAPI app for Vercel
-export_app = app 
+# Create handler for Vercel
+handler = Adapter(app) 
